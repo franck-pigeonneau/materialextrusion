@@ -1,0 +1,194 @@
+/************************************************************************
+  Ce programme C++-RHEOLEF réalise la détermination de la DTS à partir
+  d'une solution de vitesse connue.
+
+  Auteur : Franck Pigeonneau.
+
+  Date de création : 23/03/2019.
+
+  Version Rheolef: 7.0
+************************************************************************/
+
+/* Introduction du fichier d'entête de la librairie rheolef */
+#include "rheolef.h"
+
+/* Utilisation des classes cpp */
+#include <iostream> // flux entrée/sortie
+#include <fstream> // flux d'entrée/sortie dans des fichiers
+#include <string> // Manipulation des chaines de caractères
+
+/* Introduction des identificateurs des bibliotheques standard et rheolef */
+using namespace rheolef;
+using namespace std;
+
+/* Introduction des fonctions */
+#include "bdfk.h"
+#include "donneesdts.cc"
+#include "advscalar.cc"
+
+int main(int argc, char**argv) {
+  environment rheolef (argc, argv);
+
+  /* Récupération de la précision machine */
+  Float eps = numeric_limits<Float>::epsilon();
+
+  /*******************************************/
+  /* Rappel de la forme d'appel du programme */
+  /*******************************************/
+
+  if (argc < 2) {
+    cout << "Appel de la fonction incorrecte" << endl;
+    exit(0);
+  }
+
+  /*******************************************/
+  /* Recuperation du nom du fichier d'entrée */
+  /*******************************************/
+
+  string nomfichin=argv[1];
+
+  /*********************************************/
+  /* Lecture des données nécessaires au calcul */
+  /*********************************************/
+
+  int info;
+  string Pkd;
+  size_t bdfk;
+  Float dt;
+  size_t itmax;
+  Float tol;
+  string nomflow;
+  string nomfield;
+  string nomdata;
+  size_t ffield;
+  size_t fbranch;
+  
+  info=donneesdts(nomfichin,Pkd,bdfk,dt,itmax,tol,nomflow,nomfield,nomdata,ffield,fbranch);
+  
+  if (info!=0) {
+    dout << "Probleme de lecture des donnees." << endl;
+    exit(0);
+  }
+
+  /* Lecture du champ de vitesse */  
+  idiststream in(nomflow,"field");
+  field uh;
+  in >> catchmark("u") >> uh;
+  in.close();
+
+  /* Récuperation de la géometrie */
+  const geo &omega=uh.get_geo();
+
+  /* Declaration de l'espace d'approximation du scalaire */
+  space Xh(omega,Pkd);
+
+  /* Option de la quadrature */
+  quadrature_option_type qopt;
+  qopt.set_family(quadrature_option_type::gauss);
+  qopt.set_order(2*Xh.degree()+1);
+
+  /* Calcul du débit volumique à la sortie */
+  Float Qvol=integrate(omega["right"],dot(uh,normal()),qopt);
+
+  /* Formes bilinéaires correspondant aux matrices masses*/
+  trial c(Xh);
+  test ct(Xh);
+  form m=integrate(c*ct,qopt);
+  
+  /* Initialisation de la concentration */
+  vector<field> ch(bdfk+1);
+  ch[0]=field(Xh,0.);
+  ch[1]=ch[0];
+
+  /* Initialisation du flux de concentration à la sortie */
+  vector<Float> fluxch(bdfk+1);
+  fluxch[0]=0.;
+  fluxch[1]=fluxch[0];
+  
+  /* Branch definition */
+  branch event("t","c");
+  odiststream outbranch(nomfield,"branch");
+  outbranch << event(0.,ch[0]);
+  
+    /* Ouverture du fichier de sauvegarde de la dérivée temporelle */
+  ofstream outdat(nomdata,ios::out);
+  outdat << "#t    ||dcdt||    E    F" << endl;
+
+  /* Calcul instationnaire du transport de c */
+  dout << "Début du calcul ..." << endl;
+  Float normL2dcdt=1.e0;
+  for (size_t n=1;(n<itmax)&&(normL2dcdt>tol);n++) {
+
+    /* Determination of the time coefficient of the temporal derivatives */
+    size_t ktime=min(bdfk,n);
+    Float adt= (dt>0.) ? ABDF[ktime][0]/dt : 0.;
+
+    /* Determination of the explicit part of the temporal derivatives */
+    field Sch(Xh,0.);
+    if (dt!=0.) {
+      for (size_t i=1;i<=ktime;i++) {
+	Sch+=ABDF[ktime][i]*ch[i];
+      }
+      Sch/=dt;
+    }
+
+    /* Calcul de la solution ch à l'itération n */
+    ch[0]=advscalar(adt,Pkd,1.,uh,Sch,qopt);
+
+    /* Determination de la dts  et de la dérivée temporelle de la concentration*/
+    fluxch[0]=integrate(omega["right"],dot(uh,normal())*ch[0],qopt);
+    Float dts=ABDF[ktime][0]*fluxch[0];
+    field dchdt=ABDF[ktime][0]*ch[0];
+    for (size_t i=1;i<=ktime;i++) {
+      dts-=ABDF[ktime][i]*fluxch[i];
+      dchdt-=ABDF[ktime][i]*ch[i];
+    }
+    if (dt!=0.) {
+      dts/=dt;
+      dchdt/=dt;
+    }
+    dts/=Qvol;
+
+    /* Calcul de la norme L2 de la dérivée temporelle de ch */
+    normL2dcdt=sqrt(m(dchdt,dchdt));
+    
+    /* Sauvegarde de ch et fluxch aux ktime pas de temps précédents */
+    for (size_t i=min(bdfk,ktime+1);i>=1;i--) {
+      ch[i]=ch[i-1];
+      fluxch[i]=fluxch[i-1];
+    }
+    
+    /* Sauvegarde de la concentration dans le fichier branch */
+    Float t=n*dt;
+    if (n % fbranch == 0) {
+      outbranch << event(t,ch[0]);
+    }
+    if (n % ffield == 0) {
+      odiststream cfield (nomfield,"field");
+      cfield << catchmark("c") << ch[0];
+      cfield.close();
+    }
+
+    /* Sauvegarde des quantités scalaire dans le fichier data */
+    outdat << t << "  " <<normL2dcdt  << " " << dts << " " << fluxch[0] << endl;
+    dout << t << "  " <<normL2dcdt  << " " << dts << " " << fluxch[0] << endl;
+
+  }
+
+  /* Determination du moyen de résidence */
+  field Sch(Xh,1.);
+  field tmeanh=advscalar(0.,Pkd,0.,uh,Sch,qopt);
+
+  /* Sauvegarde dans le fichier field */
+  odiststream cfield (nomfield,"field");
+  cfield << catchmark("c") << ch[0]
+	 << catchmark("tmean") << tmeanh;
+  cfield.close();
+  
+    /* Fermeture des fichiers branch et dat */
+  outbranch.close();
+  outdat.close();
+
+  /* Fin du programme principal */
+  return 0;
+}

@@ -1,0 +1,11 @@
+Pkd          P0d
+bdfk         2
+dt           1.e-2
+injtime      0.e0
+itmax        10000
+tol          1.e-9
+nomflow      flow
+nomfield     scalar
+nomdata      dtsbis.dat
+ffield       10
+fbranch      10
