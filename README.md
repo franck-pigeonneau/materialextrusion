@@ -5,6 +5,7 @@ Numerical computation of the Stokes-Fourier problem with the C++ library Rheolef
 In Source:
 
 make
+
 mv gennewtonianfluid ../.
 
 In working directory:
@@ -16,6 +17,7 @@ For the residence time distribution, see article Pigeonneau, F. (2023). Residenc
 In Source_DTS:
 
 make
+
 mv calculdts ../.
 
 In working directory:
